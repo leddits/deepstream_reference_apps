@@ -1368,86 +1368,6 @@ create_source_bin (guint index, gchar * uri)
   return bin;
 }
 
-// Function to create a USB camera source bin
-static GstElement *
-create_camera_source_bin (guint index, gchar * device)
-{
-  GstElement *bin = NULL, *v4l2_src = NULL, *caps_filter = NULL, *videoconvert = NULL, *nvvidconv = NULL;
-  gchar bin_name[16] = { };
-  GstPad *src_pad = NULL;
-  GstCaps *caps = NULL;
-
-  g_snprintf (bin_name, 15, "camera-bin-%02d", index);
-  
-  /* Create a source GstBin to abstract this bin's content from the rest of the
-   * pipeline */
-  bin = gst_bin_new (bin_name);
-
-  /* Source element for reading from USB camera */
-  v4l2_src = gst_element_factory_make ("v4l2src", "camera-source");
-  
-  /* Caps filter to specify camera format */
-  caps_filter = gst_element_factory_make ("capsfilter", "v4l2-caps-filter");
-  
-  /* Video converter for format conversion */
-  videoconvert = gst_element_factory_make ("videoconvert", "video-converter");
-  
-  /* NVIDIA video converter for hardware acceleration */
-  nvvidconv = gst_element_factory_make ("nvvideoconvert", "nv-video-converter");
-
-  if (!bin || !v4l2_src || !caps_filter || !videoconvert || !nvvidconv) {
-    g_printerr ("One element in camera source bin could not be created.\n");
-    if (bin) gst_object_unref (bin);
-    if (v4l2_src) gst_object_unref (v4l2_src);
-    if (caps_filter) gst_object_unref (caps_filter);
-    if (videoconvert) gst_object_unref (videoconvert);
-    if (nvvidconv) gst_object_unref (nvvidconv);
-    return NULL;
-  }
-
-  /* Set the camera device path */
-  g_object_set (G_OBJECT (v4l2_src), "device", device, NULL);
-  
-  /* Set camera properties for better performance */
-  g_object_set (G_OBJECT (v4l2_src), 
-                "io-mode", 2,  /* GST_V4L2_IO_MMAP */
-                NULL);
-
-  /* Set caps to use YUYV format at 1280x720@10fps for compatibility */
-  caps = gst_caps_from_string ("video/x-raw,format=YUY2,width=1280,height=720,framerate=10/1");
-  g_object_set (G_OBJECT (caps_filter), "caps", caps, NULL);
-  gst_caps_unref (caps);
-
-  /* Add elements to the bin */
-  gst_bin_add_many (GST_BIN (bin), v4l2_src, caps_filter, videoconvert, nvvidconv, NULL);
-
-  /* Link the elements in the camera pipeline */
-  if (!gst_element_link_many (v4l2_src, caps_filter, videoconvert, nvvidconv, NULL)) {
-    g_printerr ("Failed to link camera source elements\n");
-    gst_object_unref (bin);
-    return NULL;
-  }
-
-  /* Get the source pad from nvvidconv */
-  src_pad = gst_element_get_static_pad (nvvidconv, "src");
-  if (!src_pad) {
-    g_printerr ("Failed to get src pad from nvvidconv\n");
-    gst_object_unref (bin);
-    return NULL;
-  }
-
-  /* Create a ghost pad for the camera bin */
-  if (!gst_element_add_pad (bin, gst_ghost_pad_new ("src", src_pad))) {
-    g_printerr ("Failed to add ghost pad in camera source bin\n");
-    gst_object_unref (src_pad);
-    gst_object_unref (bin);
-    return NULL;
-  }
-
-  gst_object_unref (src_pad);
-  return bin;
-}
-
 
 /**
  * Function to handle program interrupt signal.
@@ -1513,9 +1433,8 @@ bool verify_arguments()
     return false;
   }
   else {
-    // Check if input is a URI (rtsp:// or file://) or a camera device path (/dev/video*)
-    if (strncmp(_input, "rtsp://", 7) && strncmp(_input, "file://", 7) && strncmp(_input, "/dev/video", 10)) {
-      g_printerr("--input value is not a valid URI address or camera device path. Exiting...\n");
+    if (strncmp(_input, "rtsp://", 7) && strncmp(_input, "file://", 7)) {
+      g_printerr("--input value is not a valid URI address. Exiting...\n");
       return false;
     }
   }
@@ -1746,15 +1665,7 @@ are published to the message broker.",
     GstPad *sinkpad, *srcpad;
     gchar pad_name[16] = { };
 
-    // Check if input is a camera device path
-    if (strncmp(_input, "/dev/video", 10) == 0) {
-      // Create camera source bin for USB camera
-      source = create_camera_source_bin(0, const_cast<char*>(_input));
-    } else {
-      // Create URI source bin for files and streams
-      source = create_source_bin(0, const_cast<char*>(_input));
-    }
-    
+    source = create_source_bin(0, const_cast<char*>(_input));
     if (!source) {
       g_printerr ("Failed to create source bin. Exiting.\n");
       return -1;
