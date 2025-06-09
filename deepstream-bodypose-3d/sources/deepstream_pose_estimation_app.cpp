@@ -20,7 +20,6 @@
 #include <stdio.h>
 #include <signal.h>
 #include <bits/stdc++.h>
-
 #include "cuda_runtime_api.h"
 #include "gstnvdsinfer.h"
 #include "gstnvdsmeta.h"
