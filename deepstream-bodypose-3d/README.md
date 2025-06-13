@@ -70,7 +70,7 @@ Help Options:
 Application Options:
   -v, --version                     Print DeepStreamSDK version.
   --version-all                     Print DeepStreamSDK and dependencies version.
-  --input                           [Required] Input video address in URI format by starting with "rtsp://" or "file://", or USB camera device path like "/dev/video0".
+  --input                           [Required] Input video address in URI format by starting with "rtsp://" or "file://".
   --output                          Output video address. Either "rtsp://" or a file path is acceptable. If the value is "rtsp://", then the result video is published at "rtsp://localhost:8554/ds-test".
   --save-pose                       The file path to save both the pose25d and the recovered pose3d in JSON format.
   --conn-str                        Connection string for Gst-nvmsgbroker, e.g. <ip address>;<port>;<topic>.
@@ -89,18 +89,7 @@ $ ./deepstream-pose-estimation-app --input file://$BODYPOSE3D_HOME/streams/bodyp
 ```
 Please provide the absolute path to the source video file.
 
-2. **NEW: USB Camera Support** - Below command processes real-time input from a USB camera:
-```bash
-$ ./deepstream-pose-estimation-app --input /dev/video0
-```
-Replace `/dev/video0` with your USB camera device path. Use `ls -la /dev/video*` to find available cameras.
-
-3. USB camera with FPS monitoring and no display output:
-```bash
-$ ./deepstream-pose-estimation-app --input /dev/video0 --output fakesink --fps --fps-interval 2
-```
-
-4. When the data source is a video file, below command saves the output video with the skeleton overlay to `$BODYPOSE3D_HOME/streams/bodypose_3dbp.mp4` and save the skeleton's keypoints to `$BODYPOSE3D_HOME/streams/bodypose_3dbp.json`.
+2. When the data source is a video file, below command saves the output video with the skeleton overlay to `$BODYPOSE3D_HOME/streams/bodypose_3dbp.mp4` and save the skeleton's keypoints to `$BODYPOSE3D_HOME/streams/bodypose_3dbp.json`.
 ```bash
 $ ./deepstream-pose-estimation-app --input file://$BODYPOSE3D_HOME/streams/bodypose.mp4 --output $BODYPOSE3D_HOME/streams/bodypose_3dbp.mp4 --focal 800.0 --width 1280 --height 720 --fps --save-pose $BODYPOSE3D_HOME/streams/bodypose_3dbp.json
 ```
@@ -132,12 +121,12 @@ depth value from the skeleton's root keypoint, i.e. pelvis. `x, y, zRel` values 
 values. `x`, `y`, `z` are the keypoint's 3D position in the world coordinate whose origin is the
 camera. `x, y, z` values are in millimeters. `conf` is the confidence value of the prediction.
 
-5. When the data source is an RTSP stream and the result is published to RTSP stream `rtsp://localhost:8554/ds-test`,
+3. When the data source is an RTSP stream and the result is published to RTSP stream `rtsp://localhost:8554/ds-test`,
 ```bash
 $ ./deepstream-pose-estimation-app --input rtsp://<ipa_address>:<port>/<topic> --output rtsp://
 ```
 
-6. In order to publish both pose3D and pose25D metadata to a message broker, please do
+4. In order to publish both pose3D and pose25D metadata to a message broker, please do
 ```bash
 $ ./deepstream-pose-estimation-app --input file://$BODYPOSE3D_HOME/streams/bodypose.mp4 --conn-str "localhost;9092;test"
 ```

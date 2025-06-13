@@ -1320,7 +1320,77 @@ decodebin_child_added (GstChildProxy * child_proxy, GObject * object,
   }*/
 }
 
-// Imported from deepstream_test3_app.c
+// Modified to support USB camera input
+static GstElement *
+create_usb_camera_source_bin (guint index, const gchar* device_path)
+{
+  GstElement *bin = NULL, *source = NULL, *caps_v4l2src = NULL;
+  GstElement *src_conv = NULL, *caps_srcconv = NULL, *nvconv = NULL, *caps_vidconvsrc = NULL;
+  gchar bin_name[16] = { };
+  GstCaps *caps1, *caps2, *caps3;
+
+  g_snprintf (bin_name, 15, "source-bin-%02d", index);
+  
+  /* Create a source GstBin to abstract this bin's content from the rest of the pipeline */
+  bin = gst_bin_new (bin_name);
+
+  /* Create elements for USB camera pipeline */
+  source = gst_element_factory_make ("v4l2src", "usb-camera-source");
+  caps_v4l2src = gst_element_factory_make ("capsfilter", "v4l2src_caps");
+  src_conv = gst_element_factory_make ("videoconvert", "src-conv");
+  caps_srcconv = gst_element_factory_make ("capsfilter", "srcconv_caps");
+  nvconv = gst_element_factory_make ("nvvideoconvert", "nvconv");
+  caps_vidconvsrc = gst_element_factory_make ("capsfilter", "nvmm_caps");
+
+  if (!bin || !source || !caps_v4l2src || !src_conv || !caps_srcconv || !nvconv || !caps_vidconvsrc) {
+    g_printerr ("One element in USB camera source bin could not be created.\n");
+    return NULL;
+  }
+
+  /* Set USB camera device */
+  g_object_set (G_OBJECT (source), "device", device_path, NULL);
+
+  /* Set caps for USB camera pipeline */
+  caps1 = gst_caps_from_string ("video/x-raw, width=640, height=480, format=YUY2, framerate=30/1");
+  g_object_set (G_OBJECT (caps_v4l2src), "caps", caps1, NULL);
+
+  caps2 = gst_caps_from_string ("video/x-raw, format=NV12");
+  g_object_set (G_OBJECT (caps_srcconv), "caps", caps2, NULL);
+
+  caps3 = gst_caps_from_string ("video/x-raw(memory:NVMM), format=NV12");
+  g_object_set (G_OBJECT (caps_vidconvsrc), "caps", caps3, NULL);
+
+  gst_caps_unref (caps1);
+  gst_caps_unref (caps2);
+  gst_caps_unref (caps3);
+
+  /* Add elements to bin */
+  gst_bin_add_many (GST_BIN (bin), source, caps_v4l2src, src_conv, caps_srcconv, nvconv, caps_vidconvsrc, NULL);
+
+  /* Link elements */
+  if (!gst_element_link_many (source, caps_v4l2src, src_conv, caps_srcconv, nvconv, caps_vidconvsrc, NULL)) {
+    g_printerr ("USB camera source elements could not be linked.\n");
+    return NULL;
+  }
+
+  /* Create ghost pad */
+  GstPad *srcpad = gst_element_get_static_pad (caps_vidconvsrc, "src");
+  if (!srcpad) {
+    g_printerr ("Failed to get src pad from caps_vidconvsrc.\n");
+    return NULL;
+  }
+
+  if (!gst_element_add_pad (bin, gst_ghost_pad_new ("src", srcpad))) {
+    g_printerr ("Failed to add ghost pad in USB camera source bin.\n");
+    gst_object_unref (srcpad);
+    return NULL;
+  }
+
+  gst_object_unref (srcpad);
+  return bin;
+}
+
+// Original function kept for compatibility
 static GstElement *
 create_source_bin (guint index, gchar * uri)
 {
@@ -1365,86 +1435,6 @@ create_source_bin (guint index, gchar * uri)
     return NULL;
   }
 
-  return bin;
-}
-
-// Function to create a USB camera source bin
-static GstElement *
-create_camera_source_bin (guint index, gchar * device)
-{
-  GstElement *bin = NULL, *v4l2_src = NULL, *caps_filter = NULL, *videoconvert = NULL, *nvvidconv = NULL;
-  gchar bin_name[16] = { };
-  GstPad *src_pad = NULL;
-  GstCaps *caps = NULL;
-
-  g_snprintf (bin_name, 15, "camera-bin-%02d", index);
-  
-  /* Create a source GstBin to abstract this bin's content from the rest of the
-   * pipeline */
-  bin = gst_bin_new (bin_name);
-
-  /* Source element for reading from USB camera */
-  v4l2_src = gst_element_factory_make ("v4l2src", "camera-source");
-  
-  /* Caps filter to specify camera format */
-  caps_filter = gst_element_factory_make ("capsfilter", "v4l2-caps-filter");
-  
-  /* Video converter for format conversion */
-  videoconvert = gst_element_factory_make ("videoconvert", "video-converter");
-  
-  /* NVIDIA video converter for hardware acceleration */
-  nvvidconv = gst_element_factory_make ("nvvideoconvert", "nv-video-converter");
-
-  if (!bin || !v4l2_src || !caps_filter || !videoconvert || !nvvidconv) {
-    g_printerr ("One element in camera source bin could not be created.\n");
-    if (bin) gst_object_unref (bin);
-    if (v4l2_src) gst_object_unref (v4l2_src);
-    if (caps_filter) gst_object_unref (caps_filter);
-    if (videoconvert) gst_object_unref (videoconvert);
-    if (nvvidconv) gst_object_unref (nvvidconv);
-    return NULL;
-  }
-
-  /* Set the camera device path */
-  g_object_set (G_OBJECT (v4l2_src), "device", device, NULL);
-  
-  /* Set camera properties for better performance */
-  g_object_set (G_OBJECT (v4l2_src), 
-                "io-mode", 2,  /* GST_V4L2_IO_MMAP */
-                NULL);
-
-  /* Set caps to use YUYV format at 1280x720@10fps for compatibility */
-  caps = gst_caps_from_string ("video/x-raw,format=YUY2,width=1280,height=720,framerate=10/1");
-  g_object_set (G_OBJECT (caps_filter), "caps", caps, NULL);
-  gst_caps_unref (caps);
-
-  /* Add elements to the bin */
-  gst_bin_add_many (GST_BIN (bin), v4l2_src, caps_filter, videoconvert, nvvidconv, NULL);
-
-  /* Link the elements in the camera pipeline */
-  if (!gst_element_link_many (v4l2_src, caps_filter, videoconvert, nvvidconv, NULL)) {
-    g_printerr ("Failed to link camera source elements\n");
-    gst_object_unref (bin);
-    return NULL;
-  }
-
-  /* Get the source pad from nvvidconv */
-  src_pad = gst_element_get_static_pad (nvvidconv, "src");
-  if (!src_pad) {
-    g_printerr ("Failed to get src pad from nvvidconv\n");
-    gst_object_unref (bin);
-    return NULL;
-  }
-
-  /* Create a ghost pad for the camera bin */
-  if (!gst_element_add_pad (bin, gst_ghost_pad_new ("src", src_pad))) {
-    g_printerr ("Failed to add ghost pad in camera source bin\n");
-    gst_object_unref (src_pad);
-    gst_object_unref (bin);
-    return NULL;
-  }
-
-  gst_object_unref (src_pad);
   return bin;
 }
 
@@ -1513,9 +1503,8 @@ bool verify_arguments()
     return false;
   }
   else {
-    // Check if input is a URI (rtsp:// or file://) or a camera device path (/dev/video*)
-    if (strncmp(_input, "rtsp://", 7) && strncmp(_input, "file://", 7) && strncmp(_input, "/dev/video", 10)) {
-      g_printerr("--input value is not a valid URI address or camera device path. Exiting...\n");
+    if (strncmp(_input, "rtsp://", 7) && strncmp(_input, "file://", 7)) {
+      g_printerr("--input value is not a valid URI address. Exiting...\n");
       return false;
     }
   }
@@ -1735,23 +1724,24 @@ are published to the message broker.",
   g_object_set(G_OBJECT(streammux_pgie), "batch-size", num_sources, NULL);
   g_object_set(G_OBJECT(streammux_pgie), "width", _image_width, "height",
       _image_height,
-      "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, NULL);
+      "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, 
+      "live-source", TRUE, NULL);
 
   gst_bin_add(GST_BIN(pipeline), streammux_pgie);
   //---Set properties of streammux_pgie---
 
   // !!!TODO: support >1 input streams!!!
-  /* Source element for reading from the file/uri */
+  /* Source element for reading from USB camera */
   {
     GstPad *sinkpad, *srcpad;
     gchar pad_name[16] = { };
 
-    // Check if input is a camera device path
-    if (strncmp(_input, "/dev/video", 10) == 0) {
-      // Create camera source bin for USB camera
-      source = create_camera_source_bin(0, const_cast<char*>(_input));
+    // Use USB camera source instead of file/uri source
+    if (_input && g_str_has_prefix(_input, "/dev/video")) {
+      // Use USB camera source
+      source = create_usb_camera_source_bin(0, _input);
     } else {
-      // Create URI source bin for files and streams
+      // Use original file/uri source
       source = create_source_bin(0, const_cast<char*>(_input));
     }
     
