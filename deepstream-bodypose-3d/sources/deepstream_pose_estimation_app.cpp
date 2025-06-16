@@ -1320,77 +1320,10 @@ decodebin_child_added (GstChildProxy * child_proxy, GObject * object,
   }*/
 }
 
-// Modified to support USB camera input
-static GstElement *
-create_usb_camera_source_bin (guint index, const gchar* device_path)
-{
-  GstElement *bin = NULL, *source = NULL, *caps_v4l2src = NULL;
-  GstElement *src_conv = NULL, *caps_srcconv = NULL, *nvconv = NULL, *caps_vidconvsrc = NULL;
-  gchar bin_name[16] = { };
-  GstCaps *caps1, *caps2, *caps3;
-
-  g_snprintf (bin_name, 15, "source-bin-%02d", index);
-  
-  /* Create a source GstBin to abstract this bin's content from the rest of the pipeline */
-  bin = gst_bin_new (bin_name);
-
-  /* Create elements for USB camera pipeline */
-  source = gst_element_factory_make ("v4l2src", "usb-camera-source");
-  caps_v4l2src = gst_element_factory_make ("capsfilter", "v4l2src_caps");
-  src_conv = gst_element_factory_make ("videoconvert", "src-conv");
-  caps_srcconv = gst_element_factory_make ("capsfilter", "srcconv_caps");
-  nvconv = gst_element_factory_make ("nvvideoconvert", "nvconv");
-  caps_vidconvsrc = gst_element_factory_make ("capsfilter", "nvmm_caps");
-
-  if (!bin || !source || !caps_v4l2src || !src_conv || !caps_srcconv || !nvconv || !caps_vidconvsrc) {
-    g_printerr ("One element in USB camera source bin could not be created.\n");
-    return NULL;
-  }
-
-  /* Set USB camera device */
-  g_object_set (G_OBJECT (source), "device", device_path, NULL);
-
-  /* Set caps for USB camera pipeline */
-  caps1 = gst_caps_from_string ("video/x-raw, width=640, height=480, format=YUY2, framerate=30/1");
-  g_object_set (G_OBJECT (caps_v4l2src), "caps", caps1, NULL);
-
-  caps2 = gst_caps_from_string ("video/x-raw, format=NV12");
-  g_object_set (G_OBJECT (caps_srcconv), "caps", caps2, NULL);
-
-  caps3 = gst_caps_from_string ("video/x-raw(memory:NVMM), format=NV12");
-  g_object_set (G_OBJECT (caps_vidconvsrc), "caps", caps3, NULL);
-
-  gst_caps_unref (caps1);
-  gst_caps_unref (caps2);
-  gst_caps_unref (caps3);
-
-  /* Add elements to bin */
-  gst_bin_add_many (GST_BIN (bin), source, caps_v4l2src, src_conv, caps_srcconv, nvconv, caps_vidconvsrc, NULL);
-
-  /* Link elements */
-  if (!gst_element_link_many (source, caps_v4l2src, src_conv, caps_srcconv, nvconv, caps_vidconvsrc, NULL)) {
-    g_printerr ("USB camera source elements could not be linked.\n");
-    return NULL;
-  }
-
-  /* Create ghost pad */
-  GstPad *srcpad = gst_element_get_static_pad (caps_vidconvsrc, "src");
-  if (!srcpad) {
-    g_printerr ("Failed to get src pad from caps_vidconvsrc.\n");
-    return NULL;
-  }
-
-  if (!gst_element_add_pad (bin, gst_ghost_pad_new ("src", srcpad))) {
-    g_printerr ("Failed to add ghost pad in USB camera source bin.\n");
-    gst_object_unref (srcpad);
-    return NULL;
-  }
-
-  gst_object_unref (srcpad);
-  return bin;
-}
-
-// Original function kept for compatibility
+// Imported from deepstream_test3_app.c
+// ===== VIDEO FILE SOURCE BIN CREATION FUNCTION START =====
+// 이 함수는 비디오 파일 또는 RTSP 스트림을 처리하는 소스 빈을 생성합니다.
+// uridecodebin을 사용하여 다양한 비디오 포맷을 자동으로 감지하고 디코딩합니다.
 static GstElement *
 create_source_bin (guint index, gchar * uri)
 {
@@ -1405,6 +1338,8 @@ create_source_bin (guint index, gchar * uri)
   /* Source element for reading from the uri.
    * We will use decodebin and let it figure out the container format of the
    * stream and the codec and plug the appropriate demux and decode plugins. */
+  // uridecodebin: 비디오 파일 URI를 처리하는 핵심 엘리먼트
+  // 지원 URI 형식: file:///path/to/video.mp4, rtsp://stream_url 등
   uri_decode_bin = gst_element_factory_make ("uridecodebin", "uri-decode-bin");
 
   if (!bin || !uri_decode_bin) {
@@ -1413,6 +1348,8 @@ create_source_bin (guint index, gchar * uri)
   }
 
   /* We set the input uri to the source element */
+  // 여기서 실제 비디오 파일 경로나 스트림 URL을 설정합니다.
+  // uri 파라미터는 main 함수에서 전달된 _input 값입니다.
   g_object_set (G_OBJECT (uri_decode_bin), "uri", uri, NULL);
 
   /* Connect to the "pad-added" signal of the decodebin which generates a
@@ -1437,6 +1374,7 @@ create_source_bin (guint index, gchar * uri)
 
   return bin;
 }
+// ===== VIDEO FILE SOURCE BIN CREATION FUNCTION END =====
 
 
 /**
@@ -1498,11 +1436,15 @@ check_for_interrupt (gpointer data)
 
 bool verify_arguments()
 {
+  // ===== VIDEO FILE INPUT VALIDATION =====
+  // 입력 소스가 지정되었는지 확인합니다.
   if (!_input) {
     g_printerr("--input option is not specified. Exiting...\n");
     return false;
   }
   else {
+    // 입력 URI가 올바른 형식인지 검증합니다.
+    // 지원되는 형식: file:// (로컬 비디오 파일) 또는 rtsp:// (스트림)
     if (strncmp(_input, "rtsp://", 7) && strncmp(_input, "file://", 7)) {
       g_printerr("--input value is not a valid URI address. Exiting...\n");
       return false;
@@ -1592,6 +1534,10 @@ int main(int argc, char *argv[])
       {"version-all", 0, 0, G_OPTION_ARG_NONE, &_print_dependencies_version,
         "Print DeepStreamSDK and dependencies version.", NULL}
       ,
+      // ===== VIDEO FILE INPUT OPTION =====
+      // --input 옵션으로 비디오 파일 경로나 스트림 URL을 지정합니다.
+      // 예시: --input file:///path/to/video.mp4
+      //      --input rtsp://192.168.1.100:8554/stream
       {"input", 0, 0, G_OPTION_ARG_STRING, &_input,
         "[Required] Input video address in URI format by starting \
 with \"rtsp://\" or \"file://\".",
@@ -1724,27 +1670,23 @@ are published to the message broker.",
   g_object_set(G_OBJECT(streammux_pgie), "batch-size", num_sources, NULL);
   g_object_set(G_OBJECT(streammux_pgie), "width", _image_width, "height",
       _image_height,
-      "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, 
-      "live-source", TRUE, NULL);
+      "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, NULL);
 
   gst_bin_add(GST_BIN(pipeline), streammux_pgie);
   //---Set properties of streammux_pgie---
 
   // !!!TODO: support >1 input streams!!!
-  /* Source element for reading from USB camera */
+  /* Source element for reading from the file/uri */
+  // ===== VIDEO FILE SOURCE CONFIGURATION START =====
+  // 이 부분에서 비디오 파일을 스트림 소스로 설정합니다.
+  // _input 변수는 명령줄 옵션 --input으로 전달된 URI를 포함합니다.
+  // 지원 형식: "file://path/to/video.mp4" 또는 "rtsp://stream_url"
   {
     GstPad *sinkpad, *srcpad;
     gchar pad_name[16] = { };
 
-    // Use USB camera source instead of file/uri source
-    if (_input && g_str_has_prefix(_input, "/dev/video")) {
-      // Use USB camera source
-      source = create_usb_camera_source_bin(0, _input);
-    } else {
-      // Use original file/uri source
-      source = create_source_bin(0, const_cast<char*>(_input));
-    }
-    
+    // create_source_bin 함수가 실제 비디오 파일 소스를 생성합니다.
+    source = create_source_bin(0, const_cast<char*>(_input));
     if (!source) {
       g_printerr ("Failed to create source bin. Exiting.\n");
       return -1;
@@ -1772,6 +1714,7 @@ are published to the message broker.",
     gst_object_unref (srcpad);
     gst_object_unref (sinkpad);
   }
+  // ===== VIDEO FILE SOURCE CONFIGURATION END =====
 
   /* Use nvinfer to run inferencing on decoder's output,
    * behaviour of inferencing is set through config file */

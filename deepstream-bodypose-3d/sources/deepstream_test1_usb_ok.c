@@ -3,7 +3,22 @@
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
+ * to deal in the Software without restri  gst_element_link(nvconv, caps_vidconvsrc);        // GPU 변환 -> 캡스 필터
+  
+  // 캡스 필터와 스트림 먹서 연결 (request pad 방식)
+  // USB 카메라 소스를 스트림 먹서의 sink_0 패드에 연결
+  //gst_element_link(caps_vidconvsrc, streammux);
+  GstPad *sinkpad, *srcpad;
+  gchar pad_name_sink[16] = "sink_0";
+  gchar pad_name_src[16] = "src";
+
+  sinkpad = gst_element_get_request_pad (streammux, pad_name_sink);
+  if (!sinkpad) {
+    g_printerr ("Streammux request sink pad failed. Exiting.\n");
+    return -1;
+  }
+
+  srcpad = gst_element_get_static_pad (caps_vidconvsrc, pad_name_src);ng without limitation
  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
  * and/or sell copies of the Software, and to permit persons to whom the
  * Software is furnished to do so, subject to the following conditions:
@@ -145,6 +160,10 @@ bus_call (GstBus * bus, GstMessage * msg, gpointer data)
   return TRUE;
 }
 
+// ===== GSTREAMER ELEMENT CREATION HELPER FUNCTION =====
+// GStreamer 엘리먼트를 생성하는 헬퍼 함수
+// factory_name: GStreamer 플러그인 이름 (예: "v4l2src", "capsfilter" 등)
+// element_name: 엘리먼트 인스턴스 이름 (디버깅용)
 GstElement* make_element(const gchar* factory_name, const gchar *element_name)
 {
     GstElement  *element;
@@ -185,13 +204,17 @@ main (int argc, char *argv[])
     return -1;
   }
 
+  // ===== USB CAMERA SOURCE CONFIGURATION START =====
+  // USB 카메라를 스트림 소스로 설정하는 부분입니다.
+  // v4l2src: Video4Linux2 소스 엘리먼트로 USB 카메라 데이터를 캡처합니다.
   /* Source element for reading from the file */
   source = make_element("v4l2src", "usb-camera-hahaha");
-  caps_v4l2src = make_element("capsfilter", "v4l2src_caps");
-  src_conv = make_element ("videoconvert", "src-conv");
-  caps_srcconv = make_element("capsfilter", "hubin test");
-  nvconv = make_element ("nvvideoconvert", "nvconv");
-  caps_vidconvsrc = make_element("capsfilter", "nvmm_caps");
+  // USB 카메라 데이터 처리를 위한 캡스 필터 및 변환 엘리먼트들
+  caps_v4l2src = make_element("capsfilter", "v4l2src_caps");      // v4l2src 출력 포맷 제한
+  src_conv = make_element ("videoconvert", "src-conv");          // CPU 기반 비디오 변환
+  caps_srcconv = make_element("capsfilter", "hubin test");       // 변환 후 포맷 제한
+  nvconv = make_element ("nvvideoconvert", "nvconv");            // NVIDIA GPU 기반 변환
+  caps_vidconvsrc = make_element("capsfilter", "nvmm_caps");     // NVMM 메모리 포맷 제한
   streammux = make_element ("nvstreammux", "stream-muxer");
   pgie = make_element ("nvinfer", "primary-nvinference-engine");
   nvvidconv = make_element ("nvvideoconvert", "nvvideo-converter");
@@ -199,6 +222,8 @@ main (int argc, char *argv[])
   transform = make_element ("nvegltransform", "nvegl-transform");
   sink = make_element ("nveglglessink", "nvvideo-renderer");
 
+  // USB 카메라 디바이스 설정 (/dev/video0은 첫 번째 USB 카메라)
+  // 다른 카메라를 사용하려면 /dev/video1, /dev/video2 등으로 변경
   g_object_set(G_OBJECT(source), "device", "/dev/video0", NULL);
 
   /* Set all the necessary properties of the nvinfer element,
@@ -208,12 +233,16 @@ main (int argc, char *argv[])
   GstCaps* caps1;
   GstCaps* caps2;
   GstCaps* caps3;
+  // USB 카메라 출력 포맷 설정: 640x480 해상도, YUY2 포맷, 30fps
+  // 카메라 모델에 따라 지원하는 포맷이 다를 수 있습니다.
   caps1 = gst_caps_from_string("video/x-raw, width=640, height=480, format=YUY2, framerate=30/1");
   g_object_set(G_OBJECT(caps_v4l2src), "caps", caps1, NULL);
 
+  // CPU 변환 후 NV12 포맷으로 설정
   caps2 = gst_caps_from_string("video/x-raw, format=NV12");
   g_object_set(G_OBJECT(caps_srcconv), "caps", caps2, NULL);
 
+  // NVIDIA 메모리 (NVMM)에서 NV12 포맷으로 설정
   caps3 = gst_caps_from_string("video/x-raw(memory:NVMM), format=NV12");
   g_object_set(G_OBJECT(caps_vidconvsrc), "caps", caps3, NULL);
 
@@ -232,6 +261,7 @@ main (int argc, char *argv[])
   //gst_caps_unref(caps_nv12_nvmm);
   //gst_caps_unref(caps_nv12);
     /* Finally render the osd output */
+  // 스트림 먹서 설정: USB 카메라는 라이브 소스이므로 live-source를 TRUE로 설정
   g_object_set (G_OBJECT (streammux), 
         "width", MUXER_OUTPUT_WIDTH, 
         "height", MUXER_OUTPUT_HEIGHT, 
@@ -250,11 +280,13 @@ main (int argc, char *argv[])
       source, caps_v4l2src, src_conv, caps_srcconv, nvconv, caps_vidconvsrc, streammux, pgie,
       nvvidconv, nvosd, transform, sink, NULL);
 
-  gst_element_link(source, caps_v4l2src);
-  gst_element_link(caps_v4l2src, src_conv);
-  gst_element_link(src_conv, caps_srcconv);
-  gst_element_link(caps_srcconv, nvconv);
-  gst_element_link(nvconv, caps_vidconvsrc);
+  // USB 카메라 파이프라인 연결:
+  // v4l2src -> caps_filter -> videoconvert -> caps_filter -> nvvideoconvert -> caps_filter -> streammux
+  gst_element_link(source, caps_v4l2src);           // USB 카메라 소스 -> 캡스 필터
+  gst_element_link(caps_v4l2src, src_conv);         // 캡스 필터 -> CPU 변환
+  gst_element_link(src_conv, caps_srcconv);         // CPU 변환 -> 캡스 필터
+  gst_element_link(caps_srcconv, nvconv);           // 캡스 필터 -> GPU 변환
+  gst_element_link(nvconv, caps_vidconvsrc);        // GPU 변환 -> 캡스 필터
   
   //gst_element_link(caps_vidconvsrc, streammux);
   GstPad *sinkpad, *srcpad;
@@ -279,7 +311,9 @@ main (int argc, char *argv[])
   }
   gst_object_unref(GST_OBJECT(sinkpad));
   gst_object_unref(GST_OBJECT(srcpad));
+  // ===== USB CAMERA SOURCE CONFIGURATION END =====
 
+  // 나머지 파이프라인 연결 (추론 -> 변환 -> OSD -> 출력)
   gst_element_link(streammux, pgie);
   gst_element_link(pgie, nvvidconv);
   gst_element_link(nvvidconv, nvosd);
