@@ -1347,13 +1347,25 @@ create_usb_camera_source_bin (guint index)
     g_printerr ("One element in USB camera source bin could not be created.\n");
     return NULL;
   }
-
+  
   // USB 카메라 디바이스 설정
   g_object_set(G_OBJECT(source), "device", "/dev/video0", NULL);
   
-  g_print("Setting up USB camera with test1_usb_ok.c compatible format...\n");
+  // Sony IMX577 오토포커스 설정
+  g_print("Setting up Sony IMX577 USB camera with autofocus...\n");
+  
+  // V4L2 컨트롤을 통한 오토포커스 활성화
+  GstStructure *extra_controls = gst_structure_new("extra-controls",
+    "focus_auto", G_TYPE_INT, 1,  // 연속 오토포커스 활성화
+    "focus_absolute", G_TYPE_INT, 0,  // 절대 포커스 값 (0은 무한대)
+    NULL);
+  g_object_set(G_OBJECT(source), "extra-controls", extra_controls, NULL);
+  gst_structure_free(extra_controls);
+  
+  g_print("Autofocus enabled for Sony IMX577 camera\n");
 
-  // test1_usb_ok.c와 동일한 캡스 설정 사용
+  // 비디오 변환 및 캡스 필터 설정
+  // Sony IMX577 호환 캡스 설정 - 더 안정적인 해상도 사용 640x480 @ 30fps로 시작 (안정성 우선)
   GstCaps* caps1 = gst_caps_from_string("video/x-raw, width=640, height=480, format=YUY2, framerate=30/1");
   g_object_set(G_OBJECT(caps_v4l2src), "caps", caps1, NULL);
 
