@@ -38,13 +38,36 @@ make; make install
 Please note that this step is not necessary for Deepstream SDK version 6.2 or newer.
 
 ## Build the applications
+
+### 방법 1: 자동 빌드 스크립트 사용 (권장)
+CUDA 버전을 자동으로 감지하여 빌드합니다:
 ```bash
+cd $BODYPOSE3D_HOME
+./build.sh
+```
+
+### 방법 2: 환경변수 설정 후 수동 빌드
+```bash
+# CUDA 버전을 환경변수로 설정 (한 번만 실행)
+export CUDA_VER=12.6
+echo 'export CUDA_VER=12.6' >> ~/.bashrc
+
 # Build custom nvinfer parser of BodyPose3DNet
 cd $BODYPOSE3D_HOME/sources/nvdsinfer_custom_impl_BodyPose3DNet
 make
 # Build deepstream-pose-estimation-app
 cd $BODYPOSE3D_HOME/sources
 make
+```
+
+### 방법 3: CUDA 버전 직접 지정하여 빌드
+```bash
+# Build custom nvinfer parser of BodyPose3DNet
+cd $BODYPOSE3D_HOME/sources/nvdsinfer_custom_impl_BodyPose3DNet
+make CUDA_VER=12.6
+# Build deepstream-pose-estimation-app
+cd $BODYPOSE3D_HOME/sources
+make CUDA_VER=12.6
 ```
 If the above steps are successful, `deepstream-pose-estimation-app` shall be built in the same directory. Under `$BODYPOSE3D_HOME/sources/nvdsinfer_custom_impl_BodyPose3DNet`, `libnvdsinfer_custom_impl_BodyPose3DNet.so` should be present as well.
 

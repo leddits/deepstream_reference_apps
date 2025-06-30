@@ -17,7 +17,10 @@
 
 CUDA_VER?=
 ifeq ($(CUDA_VER),)
-  $(error "CUDA_VER is not set")
+  CUDA_VER=$(shell nvcc --version | grep "release" | sed 's/.*release \([0-9]*\.[0-9]*\).*/\1/')
+  ifeq ($(CUDA_VER),)
+    $(error "CUDA_VER could not be detected automatically. Please set CUDA_VER manually")
+  endif
 endif
 
 CXX=g++ -std=c++14

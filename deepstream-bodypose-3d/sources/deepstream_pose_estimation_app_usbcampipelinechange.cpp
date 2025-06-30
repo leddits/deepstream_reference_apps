@@ -94,10 +94,9 @@ static gchar *_nvmsgbroker_conn_str = NULL;
 static gchar *_pose_filename = NULL;
 static gchar *_tracker = NULL;
 static gchar *_publish_pose = NULL;
-static gchar *_rtsp_username = NULL;
-static gchar *_rtsp_password = NULL;
 static guint _cintr = FALSE;
 static gboolean _quit = FALSE;
+static gboolean _use_usb_camera = FALSE;  // USB 카메라 사용 여부
 FILE *_pose_file = NULL;
 double _focal_length_dbl = FOCAL_LENGTH;
 float _focal_length = (float)_focal_length_dbl;
@@ -1315,20 +1314,6 @@ decodebin_child_added (GstChildProxy * child_proxy, GObject * object,
     g_signal_connect (G_OBJECT (object), "child-added",
         G_CALLBACK (decodebin_child_added), user_data);
   }
-  
-  // RTSP 소스에 인증 정보 설정 - 더 포괄적인 검사
-  if (g_strrstr (name, "rtspsrc") || g_strrstr (name, "source")) {
-    const gchar *factory_name = GST_OBJECT_NAME(gst_element_get_factory(GST_ELEMENT(object)));
-    g_print ("Element factory name: %s\n", factory_name);
-    if (g_strcmp0(factory_name, "rtspsrc") == 0) {
-      if (_rtsp_username && _rtsp_password) {
-        g_print ("Setting RTSP authentication: username=%s\n", _rtsp_username);
-        g_object_set (G_OBJECT (object), "user-id", _rtsp_username, NULL);
-        g_object_set (G_OBJECT (object), "user-pw", _rtsp_password, NULL);
-      }
-    }
-  }
-  
   /* Commented to suppress warnings*/
   /*if (!(g_strcmp0 (source_type, "rtmp"))) {
      g_object_set (G_OBJECT (object), "do-timestamp", 1, NULL);
@@ -1337,6 +1322,89 @@ decodebin_child_added (GstChildProxy * child_proxy, GObject * object,
 }
 
 // Imported from deepstream_test3_app.c
+// ===== USB CAMERA SOURCE BIN CREATION FUNCTION START =====
+// USB 카메라를 위한 소스 빈을 생성하는 함수
+// test1_usb_ok.c의 성공적인 구조를 따름
+static GstElement *
+create_usb_camera_source_bin (guint index)
+{
+  GstElement *bin = NULL, *source = NULL, *nvconv = NULL, *caps_filter = NULL, *jpegdec = NULL, *videoconv = NULL;
+  gchar bin_name[16] = { };
+
+  g_snprintf (bin_name, 15, "usb-source-bin-%02d", index);
+  bin = gst_bin_new (bin_name);
+
+  // 최적화된 USB 카메라 파이프라인: v4l2src → capsfilter → jpegdec → videoconvert → nvvideoconvert (5단계)
+  source = gst_element_factory_make("v4l2src", "usb-camera-source");
+  caps_filter = gst_element_factory_make("capsfilter", "v4l2-caps");
+  jpegdec = gst_element_factory_make("jpegdec", "jpeg-decoder");
+  videoconv = gst_element_factory_make("videoconvert", "videoconv");
+  nvconv = gst_element_factory_make("nvvideoconvert", "nvconv");
+
+  if (!bin || !source || !caps_filter || !jpegdec || !videoconv || !nvconv) {
+    g_printerr ("One element in optimized USB camera source bin could not be created.\n");
+    return NULL;
+  }
+  
+  // USB 카메라 디바이스 및 최적화 설정
+  g_object_set(G_OBJECT(source), 
+    "device", "/dev/video0",
+    "do-timestamp", TRUE,          // 타임스탬프 자동 생성 활성화
+    "io-mode", 2,                  // MMAP 모드 (성능 최적화)
+    NULL);
+  
+  // Sony IMX577 오토포커스 설정
+  g_print("Setting up optimized Sony IMX577 USB camera pipeline with MJPEG+jpegdec...\n");
+  
+  // V4L2 컨트롤을 통한 오토포커스 활성화
+  GstStructure *extra_controls = gst_structure_new("extra-controls",
+    "focus_auto", G_TYPE_INT, 1,      // 연속 오토포커스 활성화
+    "focus_absolute", G_TYPE_INT, 0,  // 절대 포커스 값 (0은 무한대)
+    "exposure_auto", G_TYPE_INT, 3,   // 자동 노출 활성화
+    "white_balance_auto_preset", G_TYPE_INT, 1, // 자동 화이트밸런스
+    NULL);
+  g_object_set(G_OBJECT(source), "extra-controls", extra_controls, NULL);
+  gst_structure_free(extra_controls);
+  
+  // nvvideoconvert 최적화 설정
+  g_object_set(G_OBJECT(nvconv),
+    "compute-hw", 1,               // GPU 가속 활성화
+    "nvbuf-memory-type", 0,        // Default NVMM 메모리 사용
+    NULL);
+
+  // 캡스필터: v4l2src에서 MJPEG 640x480@30fps로 캡처 (안정적 해상도)
+  GstCaps* v4l2_caps = gst_caps_from_string("image/jpeg, width=640, height=480, framerate=30/1");
+  g_object_set(G_OBJECT(caps_filter), "caps", v4l2_caps, NULL);
+  gst_caps_unref(v4l2_caps);
+
+  // 빈에 엘리먼트들 추가
+  gst_bin_add_many(GST_BIN(bin), source, caps_filter, jpegdec, videoconv, nvconv, NULL);
+
+  // 엘리먼트들 연결 (MJPEG → jpegdec → videoconvert → nvvideoconvert 파이프라인)
+  if (!gst_element_link(source, caps_filter) ||
+      !gst_element_link(caps_filter, jpegdec) ||
+      !gst_element_link(jpegdec, videoconv) ||
+      !gst_element_link(videoconv, nvconv)) {
+    g_printerr ("Elements could not be linked in optimized USB camera source bin.\n");
+    return NULL;
+  }
+
+  // 고스트 패드 생성
+  GstPad *srcpad = gst_element_get_static_pad(nvconv, "src");
+  if (!gst_element_add_pad(bin, gst_ghost_pad_new("src", srcpad))) {
+    g_printerr ("Failed to add ghost pad in optimized USB camera source bin\n");
+    return NULL;
+  }
+  gst_object_unref(srcpad);
+
+  g_print("Optimized USB camera source bin created successfully (MJPEG → jpegdec → NVMM)\n");
+  g_print("Pipeline: v4l2src → capsfilter → jpegdec → videoconvert → nvvideoconvert\n");
+  return bin;
+}
+
+// ===== VIDEO FILE SOURCE BIN CREATION FUNCTION START =====
+// 이 함수는 비디오 파일 또는 RTSP 스트림을 처리하는 소스 빈을 생성합니다.
+// uridecodebin을 사용하여 다양한 비디오 포맷을 자동으로 감지하고 디코딩합니다.
 static GstElement *
 create_source_bin (guint index, gchar * uri)
 {
@@ -1351,6 +1419,8 @@ create_source_bin (guint index, gchar * uri)
   /* Source element for reading from the uri.
    * We will use decodebin and let it figure out the container format of the
    * stream and the codec and plug the appropriate demux and decode plugins. */
+  // uridecodebin: 비디오 파일 URI를 처리하는 핵심 엘리먼트
+  // 지원 URI 형식: file:///path/to/video.mp4, rtsp://stream_url 등
   uri_decode_bin = gst_element_factory_make ("uridecodebin", "uri-decode-bin");
 
   if (!bin || !uri_decode_bin) {
@@ -1359,6 +1429,8 @@ create_source_bin (guint index, gchar * uri)
   }
 
   /* We set the input uri to the source element */
+  // 여기서 실제 비디오 파일 경로나 스트림 URL을 설정합니다.
+  // uri 파라미터는 main 함수에서 전달된 _input 값입니다.
   g_object_set (G_OBJECT (uri_decode_bin), "uri", uri, NULL);
 
   /* Connect to the "pad-added" signal of the decodebin which generates a
@@ -1383,6 +1455,7 @@ create_source_bin (guint index, gchar * uri)
 
   return bin;
 }
+// ===== VIDEO FILE SOURCE BIN CREATION FUNCTION END =====
 
 
 /**
@@ -1444,14 +1517,25 @@ check_for_interrupt (gpointer data)
 
 bool verify_arguments()
 {
-  if (!_input) {
-    g_printerr("--input option is not specified. Exiting...\n");
-    return false;
+  // ===== VIDEO FILE INPUT VALIDATION =====
+  // USB 카메라 사용 시와 파일/스트림 사용 시를 구분하여 검증합니다.
+  if (_use_usb_camera) {
+    g_print("Using USB camera as input source.\n");
+    // USB 카메라 사용 시 _input은 무시됩니다.
   }
   else {
-    if (strncmp(_input, "rtsp://", 7) && strncmp(_input, "file://", 7)) {
-      g_printerr("--input value is not a valid URI address. Exiting...\n");
+    // 입력 소스가 지정되었는지 확인합니다.
+    if (!_input) {
+      g_printerr("--input option is not specified and --usb-camera is not used. Exiting...\n");
       return false;
+    }
+    else {
+      // 입력 URI가 올바른 형식인지 검증합니다.
+      // 지원되는 형식: file:// (로컬 비디오 파일) 또는 rtsp:// (스트림)
+      if (strncmp(_input, "rtsp://", 7) && strncmp(_input, "file://", 7)) {
+        g_printerr("--input value is not a valid URI address. Exiting...\n");
+        return false;
+      }
     }
   }
 
@@ -1538,9 +1622,17 @@ int main(int argc, char *argv[])
       {"version-all", 0, 0, G_OPTION_ARG_NONE, &_print_dependencies_version,
         "Print DeepStreamSDK and dependencies version.", NULL}
       ,
+      // ===== VIDEO FILE INPUT OPTION =====
+      // --input 옵션으로 비디오 파일 경로나 스트림 URL을 지정합니다.
+      // 예시: --input file:///path/to/video.mp4
+      //      --input rtsp://192.168.1.100:8554/stream
       {"input", 0, 0, G_OPTION_ARG_STRING, &_input,
-        "[Required] Input video address in URI format by starting \
+        "[Required unless --usb-camera is used] Input video address in URI format by starting \
 with \"rtsp://\" or \"file://\".",
+        NULL}
+      ,
+      {"usb-camera", 0, 0, G_OPTION_ARG_NONE, &_use_usb_camera,
+        "Use USB camera as input source instead of file/stream. When this option is used, --input is ignored.",
         NULL}
       ,
       {"output", 0, 0, G_OPTION_ARG_STRING, &_output,
@@ -1589,14 +1681,6 @@ are published to the message broker.",
       ,
       {"focal", 0, 0, G_OPTION_ARG_DOUBLE, &_focal_length_dbl,
         "Camera focal length in millimeters. The default value is 800.79041.",//FOCAL_LENGTH
-        NULL}
-      ,
-      {"rtsp-username", 0, 0, G_OPTION_ARG_STRING, &_rtsp_username,
-        "Username for RTSP authentication.",
-        NULL}
-      ,
-      {"rtsp-password", 0, 0, G_OPTION_ARG_STRING, &_rtsp_password,
-        "Password for RTSP authentication.",
         NULL}
       ,
       {"osd-process-mode", 0, 0, G_OPTION_ARG_INT, &_osd_process_mode,
@@ -1676,20 +1760,55 @@ are published to the message broker.",
   }
   //---Set properties of streammux_pgie---
   g_object_set(G_OBJECT(streammux_pgie), "batch-size", num_sources, NULL);
-  g_object_set(G_OBJECT(streammux_pgie), "width", _image_width, "height",
-      _image_height,
-      "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, NULL);
+  
+  // USB 카메라 사용 시 최적화된 설정으로 레이턴시 최소화
+  if (_use_usb_camera) {
+    g_object_set(G_OBJECT(streammux_pgie), 
+        "width", 640, 
+        "height", 480,
+        "batched-push-timeout", 10000,    // 10ms로 단축 (기본 40ms에서 감소)
+        "live-source", TRUE,
+        "nvbuf-memory-type", 0,           // NVMM 메모리 사용 (GPU 최적화)
+        "gpu-id", 0,                      // GPU 0 사용
+        "interpolation-method", 1,        // 빠른 보간 방법 (Nearest)
+        "sync-inputs", TRUE,              // 입력 동기화 활성화
+        "drop-pipeline-eos", TRUE, 
+        NULL);
+    g_print("Streammux optimized for USB camera: 640x480, 10ms timeout, GPU memory\n");
+  } else {
+    g_object_set(G_OBJECT(streammux_pgie), 
+        "width", _image_width, 
+        "height", _image_height,
+        "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, 
+        "live-source", FALSE,
+        "nvbuf-memory-type", 0,           // NVMM 메모리 사용 (GPU 최적화)
+        "gpu-id", 0,                      // GPU 0 사용
+        NULL);
+    g_print("Streammux configured for file/stream: %dx%d, live-source=FALSE\n", _image_width, _image_height);
+  }
 
   gst_bin_add(GST_BIN(pipeline), streammux_pgie);
   //---Set properties of streammux_pgie---
 
   // !!!TODO: support >1 input streams!!!
   /* Source element for reading from the file/uri */
+  // ===== VIDEO SOURCE CONFIGURATION START =====
+  // USB 카메라 또는 비디오 파일/스트림을 소스로 설정합니다.
   {
     GstPad *sinkpad, *srcpad;
     gchar pad_name[16] = { };
 
-    source = create_source_bin(0, const_cast<char*>(_input));
+    if (_use_usb_camera) {
+      // USB 카메라 소스 빈 생성
+      g_print("Creating USB camera source...\n");
+      source = create_usb_camera_source_bin(0);
+    } else {
+      // create_source_bin 함수가 실제 비디오 파일 소스를 생성합니다.
+      // _input 변수는 명령줄 옵션 --input으로 전달된 URI를 포함합니다.
+      // 지원 형식: "file://path/to/video.mp4" 또는 "rtsp://stream_url"
+      g_print("Creating file/stream source for: %s\n", _input);
+      source = create_source_bin(0, const_cast<char*>(_input));
+    }
     if (!source) {
       g_printerr ("Failed to create source bin. Exiting.\n");
       return -1;
@@ -1717,6 +1836,7 @@ are published to the message broker.",
     gst_object_unref (srcpad);
     gst_object_unref (sinkpad);
   }
+  // ===== VIDEO SOURCE CONFIGURATION END =====
 
   /* Use nvinfer to run inferencing on decoder's output,
    * behaviour of inferencing is set through config file */
@@ -2058,7 +2178,11 @@ are published to the message broker.",
   }
 
   /* Set the pipeline to "playing" state */
-  g_print("Now playing: %s\n", _input);
+  if (_use_usb_camera) {
+    g_print("Now playing from USB camera\n");
+  } else {
+    g_print("Now playing: %s\n", _input);
+  }
   gst_element_set_state(pipeline, GST_STATE_PLAYING);
   GST_DEBUG_BIN_TO_DOT_FILE((GstBin*)pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
 
