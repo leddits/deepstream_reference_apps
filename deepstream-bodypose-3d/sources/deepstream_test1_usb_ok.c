@@ -33,8 +33,8 @@
 /* The muxer output resolution must be set if the input streams will be of
  * different resolution. The muxer will scale all the input frames to this
  * resolution. */
-#define MUXER_OUTPUT_WIDTH 640
-#define MUXER_OUTPUT_HEIGHT 480
+#define MUXER_OUTPUT_WIDTH 1920
+#define MUXER_OUTPUT_HEIGHT 1080
 
 /* Muxer batch formation timeout, for e.g. 40 millisec. Should ideally be set
  * based on the fastest source's framerate. */
@@ -164,8 +164,8 @@ main (int argc, char *argv[])
   GstElement *pipeline = NULL, *source = NULL,
       *streammux = NULL, *sink = NULL, *pgie = NULL, *nvvidconv = NULL,
       *nvosd = NULL;
-  GstElement *src_conv = NULL, *nvconv = NULL;
-  GstElement *caps_v4l2src = NULL, *caps_vidconvsrc = NULL, *caps_srcconv = NULL;
+  GstElement *h264parse = NULL, *nvdecoder = NULL;
+  GstElement *caps_v4l2src = NULL, *caps_vidconvsrc = NULL;
   GstCaps *caps_uyvy = NULL, *caps_nv12_nvmm = NULL, *caps_nv12 = NULL;
   GstCapsFeatures *feature = NULL;
   GstElement *transform = NULL;
@@ -186,11 +186,10 @@ main (int argc, char *argv[])
   }
 
   /* Source element for reading from the file */
-  source = make_element("v4l2src", "usb-camera-hahaha");
+  source = make_element("v4l2src", "usb-camera-source");
   caps_v4l2src = make_element("capsfilter", "v4l2src_caps");
-  src_conv = make_element ("videoconvert", "src-conv");
-  caps_srcconv = make_element("capsfilter", "hubin test");
-  nvconv = make_element ("nvvideoconvert", "nvconv");
+  h264parse = make_element("h264parse", "h264-parser");
+  nvdecoder = make_element("nvv4l2decoder", "nvv4l2-decoder");
   caps_vidconvsrc = make_element("capsfilter", "nvmm_caps");
   streammux = make_element ("nvstreammux", "stream-muxer");
   pgie = make_element ("nvinfer", "primary-nvinference-engine");
@@ -200,25 +199,29 @@ main (int argc, char *argv[])
   sink = make_element ("nveglglessink", "nvvideo-renderer");
 
   g_object_set(G_OBJECT(source), "device", "/dev/video0", NULL);
+  
+  /* Set hardware decoder properties for optimal performance */
+  g_object_set(G_OBJECT(nvdecoder), 
+      "enable-max-performance", TRUE,
+      "drop-frame-interval", 0,
+      "num-extra-surfaces", 1,
+      NULL);
 
   /* Set all the necessary properties of the nvinfer element,
    * the necessary ones are : */
   g_object_set (G_OBJECT (pgie), "config-file-path", "dstest1_pgie_config.yml", NULL);
 
   GstCaps* caps1;
-  GstCaps* caps2;
   GstCaps* caps3;
-  caps1 = gst_caps_from_string("video/x-raw, width=640, height=480, format=YUY2, framerate=30/1");
+  /* Set H.264 caps for hardware decoding - remove width/height constraints for auto-negotiation */
+  caps1 = gst_caps_from_string("video/x-h264, stream-format=byte-stream, alignment=au");
   g_object_set(G_OBJECT(caps_v4l2src), "caps", caps1, NULL);
 
-  caps2 = gst_caps_from_string("video/x-raw, format=NV12");
-  g_object_set(G_OBJECT(caps_srcconv), "caps", caps2, NULL);
-
+  /* NVMM caps for zero-copy operation */
   caps3 = gst_caps_from_string("video/x-raw(memory:NVMM), format=NV12");
   g_object_set(G_OBJECT(caps_vidconvsrc), "caps", caps3, NULL);
 
   gst_caps_unref(caps1);
-  gst_caps_unref(caps2);
   gst_caps_unref(caps3);
  
   //caps_uyvy = gst_caps_new_simple ("video/x-raw", "format", G_TYPE_STRING, "YUYV",
@@ -231,13 +234,15 @@ main (int argc, char *argv[])
   //gst_caps_unref(caps_uyvy);
   //gst_caps_unref(caps_nv12_nvmm);
   //gst_caps_unref(caps_nv12);
-    /* Finally render the osd output */
+  /* Set streammux properties for low latency */
   g_object_set (G_OBJECT (streammux), 
         "width", MUXER_OUTPUT_WIDTH, 
         "height", MUXER_OUTPUT_HEIGHT, 
         "batch-size", 1, 
-        "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, 
-        "live-source", TRUE, NULL);
+        "batched-push-timeout", 1000000,  /* Reduced from 4000000 for lower latency */
+        "live-source", TRUE,
+        "attach-sys-ts", TRUE,
+        NULL);
 
   /* we add a message handler */
   bus = gst_pipeline_get_bus (GST_PIPELINE (pipeline));
@@ -247,14 +252,13 @@ main (int argc, char *argv[])
   /* Set up the pipeline */
   /* we add all elements into the pipeline */
   gst_bin_add_many (GST_BIN (pipeline),
-      source, caps_v4l2src, src_conv, caps_srcconv, nvconv, caps_vidconvsrc, streammux, pgie,
+      source, caps_v4l2src, h264parse, nvdecoder, caps_vidconvsrc, streammux, pgie,
       nvvidconv, nvosd, transform, sink, NULL);
 
   gst_element_link(source, caps_v4l2src);
-  gst_element_link(caps_v4l2src, src_conv);
-  gst_element_link(src_conv, caps_srcconv);
-  gst_element_link(caps_srcconv, nvconv);
-  gst_element_link(nvconv, caps_vidconvsrc);
+  gst_element_link(caps_v4l2src, h264parse);
+  gst_element_link(h264parse, nvdecoder);
+  gst_element_link(nvdecoder, caps_vidconvsrc);
   
   //gst_element_link(caps_vidconvsrc, streammux);
   GstPad *sinkpad, *srcpad;

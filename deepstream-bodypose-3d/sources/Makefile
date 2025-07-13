@@ -39,7 +39,7 @@ ifeq ($(TARGET_DEVICE),aarch64)
   CFLAGS:= -DPLATFORM_TEGRA
 endif
 
-SRCS:= deepstream_pose_estimation_app.cpp
+SRCS:= deepstream_pose_estimation_app_h264.cpp
 
 INCS:= $(wildcard *.h)
 
